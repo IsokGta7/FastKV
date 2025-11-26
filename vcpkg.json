@@ -1,0 +1,12 @@
+{
+    "name": "fastkv",
+    "version": "0.1.0",
+    "dependencies": [
+        "boost-asio",
+        "protobuf",
+        "grpc",
+        "fmt",
+        "gtest",
+        "benchmark"
+    ]
+}
