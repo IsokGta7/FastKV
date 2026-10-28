@@ -33,7 +33,7 @@ target_link_libraries(fastkv_main PRIVATE fastkv)
 # ================================
 # Tests (GTest)
 # ================================
-enable_testing()                       # <---- ¡FALTA CRÍTICA!
+enable_testing()
 
 find_package(GTest CONFIG REQUIRED)
 
@@ -41,7 +41,7 @@ add_executable(fastkv_tests tests/test_fastkv.cpp)
 target_link_libraries(fastkv_tests PRIVATE fastkv GTest::gtest GTest::gtest_main)
 
 include(GoogleTest)
-gtest_discover_tests(fastkv_tests)     # <---- ¡Necesario para CTest!
+gtest_discover_tests(fastkv_tests)
 
 # ================================
 # Benchmarks (Google Benchmark)

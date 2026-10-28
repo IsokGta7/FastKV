@@ -1,204 +1,160 @@
-# fastkv — In-Memory Key-Value Store (Proyecto profesional)
+# FastKV
 
-## Resumen
-**fastkv** es un proyecto personal/profesional para construir un _in-memory key-value store_ de alto rendimiento con foco en: diseño de sistemas, concurrencia, networking asíncrono, persistencia simple y herramientas de calidad (tests, benchmarks, CI, sanitizers).  
-El objetivo es aprender y demostrar dominio en **C/C++ moderno**, patrones de alta concurrencia y prácticas de ingeniería (vcpkg, CMake, clang-tools, GitHub Actions).
+[![CI](https://github.com/IsokGta7/FastKV/actions/workflows/ci.yml/badge.svg)](https://github.com/IsokGta7/FastKV/actions/workflows/ci.yml)
 
----
+FastKV is a small, thread-safe, in-memory key-value store written in C++20. It is a
+library (`fastkv`) with a string-to-string map behind a sharded locking scheme, a test
+suite that runs under AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer,
+and a Google Benchmark target that measures how the shard count affects throughput
+under concurrent load.
 
-## 🎯 Visión — Qué queremos lograr
+It is a learning and portfolio project. There is no network server and no persistence
+yet; see [Roadmap](#roadmap).
 
-### **MVP**
-- Servidor TCP con comandos: `SET`, `GET`, `DEL`.
-- Librería `fastkv` reusable por otros binarios.
+## Design
 
-### **Nivel profesional**
-- Sharding.
-- Thread-pool.
-- Append-only log para persistencia.
-- Benchmarks reproducibles.
-- Tests automáticos y CI con sanitizers.
-- Integración con Boost.Asio y gRPC (opcional).
+The store is split into a fixed number of shards (16 by default). Each shard is an
+`std::unordered_map<std::string, std::string>` guarded by its own `std::shared_mutex`:
 
-### **Resultados visibles (CV/GitHub)**
-- Repo limpio y profesional.
-- README técnico completo.
-- Benchmarks comparativos.
-- Badges de CI.
-- Issues/PRs organizados.
-- Documentación técnica.
+- `get` takes a shared lock on one shard, so any number of readers proceed in parallel.
+- `put` and `erase` take an exclusive lock on one shard, so a writer only blocks
+  operations whose keys hash to the same shard.
 
----
+A key's shard is chosen from `std::hash<std::string>` after a splitmix64 mixing step.
+The mixing matters: each shard's map hashes the key again with the same function, and
+standard libraries that index power-of-two bucket arrays by the low bits of the hash
+(MSVC's does) would otherwise see every key in a shard share those bits and use only a
+fraction of the buckets. Before the fix, 16 shards were about three times slower than one
+shard on a single thread under MSVC.
 
-## 🛠️ Stack tecnológico recomendado
+Shards are aligned to 64 bytes so neighbouring locks do not share a cache line.
 
-- **Lenguaje:** C++20.
-- **Build:** CMake (modern target-based) + Ninja.
-- **Paquetería:** vcpkg (manifest mode vía `vcpkg.json`).
-- **Compiler:** clang++ (LLVM) o g++ (MinGW).  
-  ⚠️ *No mezclar toolchains.*
-- **Networking:** Boost.Asio (o standalone Asio).
-- **RPC/Serialization:** gRPC + Protobuf (opcional).
-- **Testing:** GoogleTest.
-- **Benchmarking:** Google Benchmark.
-- **Estilo y análisis:** clang-format, clang-tidy, sanitizers (ASan/UBSan/TSan).
-- **CI/CD:** GitHub Actions (build matrix, sanitizers, linting).
-- **Profiler (futuro):** perf, Tracy, Intel VTune.
+## API
 
----
+```cpp
+#include "fastkv/fastkv.hpp"
 
-## 📁 Estructura del repositorio
+fastkv::FastKV kv;          // 16 shards
+fastkv::FastKV single(1);   // one shard: a single map behind one shared_mutex
+
+kv.put("user:1", "isok");                       // insert or overwrite
+std::optional<std::string> v = kv.get("user:1"); // "isok"
+kv.get("missing");                              // std::nullopt
+kv.put("empty", "");
+kv.get("empty");                                // "" (present, empty), not nullopt
+bool removed = kv.erase("user:1");              // true; false if the key was absent
+kv.shard_count();                               // 16
+```
+
+`FastKV(0)` throws `std::invalid_argument`. The store is neither copyable nor movable.
+All member functions are safe to call concurrently from any number of threads. `get`
+returns a copy of the value, so the result stays valid after the lock is released.
+
+## Building
+
+Requirements: CMake 3.25 or newer, a C++20 compiler, and
+[vcpkg](https://github.com/microsoft/vcpkg) for GoogleTest and Google Benchmark.
+`vcpkg.json` lists the dependencies and pins their versions with `builtin-baseline`, so
+CMake installs them automatically through the vcpkg toolchain file (manifest mode).
+
+Linux and macOS:
 
 ```bash
-fastkv/
-├─ CMakeLists.txt
-├─ vcpkg.json
-├─ include/
-│ └─ fastkv/
-│ └─ fastkv.hpp
-├─ src/
-│ ├─ fastkv.cpp
-│ └─ main.cpp
-├─ tests/
-│ └─ test_fastkv.cpp
-├─ benchmarks/
-│ └─ bench_fastkv.cpp
-├─ .vscode/
-│ └─ settings.json
-├─ .clang-format
-├─ .clang-tidy
-└─ README.md
+git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+~/vcpkg/bootstrap-vcpkg.sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build build --parallel
 ```
 
----
+Windows (Visual Studio 2022 or Build Tools, from a Developer PowerShell):
 
-## ⚡ Quickstart — Configuración del entorno (Windows)
+```powershell
+git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+      -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build build --config Release --parallel
+```
 
-Estos pasos asumen que usas **Windows 10+** y trabajarás con **vcpkg**.  
-Decide si usarás **clang++ (LLVM)** o **g++ (MinGW)**.  
-⚠️ No mezcles librerías compiladas con MSVC si usas MinGW/clang.
+The vcpkg copy bundled with Visual Studio (`%VCINSTALLDIR%\vcpkg`) also works, because
+the manifest names a baseline.
 
----
+CI builds and tests on Ubuntu with GCC and on Windows with MSVC. macOS is not covered by
+CI; the code uses only the standard library, but that build has not been verified.
 
-### 1️⃣ Clonar repositorio
+## Tests
 
 ```bash
-git clone git@github.com:tuuser/fastkv.git
-cd fastkv
+ctest --test-dir build --output-on-failure            # add -C Release on Windows
 ```
-### 2️⃣ Instalar vcpkg (si aún no lo tienes)
+
+The suite covers put, get, erase, overwrite, absent keys versus empty values, identical
+behaviour across shard counts, and two multi-threaded cases (disjoint writers with
+concurrent readers, and threads racing put and erase on the same keys).
+
+Sanitizer builds (GCC or Clang):
 
 ```bash
-cd C:\dev
-git clone https://github.com/microsoft/vcpkg.git
-cd vcpkg
-.\bootstrap-vcpkg.bat
+cmake -S . -B build-asan -DFASTKV_SANITIZE=address,undefined \
+      -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -S . -B build-tsan -DFASTKV_SANITIZE=thread \
+      -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
 
-Con vcpkg.json en la raíz del proyecto:
+On kernels with high mmap randomisation (Ubuntu 24.04, for example) GCC 13's
+ThreadSanitizer aborts with "unexpected memory mapping"; run
+`sudo sysctl vm.mmap_rnd_bits=28` first, or wrap the build and test commands in
+`setarch $(uname -m) -R`.
+
+## Benchmark
+
 ```bash
-C:\dev\vcpkg\vcpkg.exe install --triplet x64-windows
-```
-Esto habilita manifest mode.
-
-### 3️⃣ Instalar LLVM (recomendado)
-
-Después de instalar LLVM marcar: Add LLVM to PATH.
-
-Verificar instalación:
-```bash
-where clang++
-where clang-format
-where clang-tidy
+./build/fastkv_bench                       # build/Release/fastkv_bench.exe on Windows
+./build/fastkv_bench --benchmark_filter='threads:8'
 ```
 
-### 4️⃣ Configurar VS Code (.vscode/settings.json)
-```json
-{
-  "cmake.generator": "Ninja",
-  "cmake.configureSettings": {
-    "CMAKE_TOOLCHAIN_FILE": "C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake"
-  },
-  "cmake.buildDirectory": "${workspaceFolder}/build",
-  "cmake.sourceDirectory": "${workspaceFolder}",
-  "C_Cpp.clang_format_style": "file",
-  "C_Cpp.codeAnalysis.clangTidy.useBuildPath": true,
-  "C_Cpp.codeAnalysis.clangTidy.enabled": true
-}
+`BM_MixedWorkload` preloads 65,536 keys into one shared store and has 1, 2, 4 or 8
+threads issue uniformly random operations, 10% or 50% of them writes, against a store
+with 1 or 16 shards.
+
+Measured on an Intel Core Ultra 7 155H laptop (16 cores, 22 threads), Windows 11, MSVC
+19.44 (Visual Studio Build Tools 2022 17.14), Release build, median of 5 repetitions of
+at least 1 s each. Figures are total operations per second across all threads. Run to
+run variation on this machine was up to about 30%, so read them as shape, not as exact
+values.
+
+| Writes | Threads | 1 shard | 16 shards |
+|-------:|--------:|--------:|----------:|
+| 10%    | 1       | 6.7 M/s | 7.3 M/s   |
+| 10%    | 2       | 6.5 M/s | 9.8 M/s   |
+| 10%    | 4       | 4.8 M/s | 11.5 M/s  |
+| 10%    | 8       | 1.7 M/s | 15.4 M/s  |
+| 50%    | 1       | 5.1 M/s | 6.6 M/s   |
+| 50%    | 2       | 5.9 M/s | 7.3 M/s   |
+| 50%    | 4       | 5.5 M/s | 7.7 M/s   |
+| 50%    | 8       | 3.1 M/s | 8.7 M/s   |
+
+With one shard, adding threads lowers total throughput: every operation contends for the
+same lock, even when only 10% of them write. With 16 shards, throughput rises with the
+thread count. Write-heavy load scales less, because writers still exclude everything else
+on their shard.
+
+## Roadmap
+
+None of the following is implemented.
+
+- A TCP server built on Asio, speaking a small text protocol (`SET`, `GET`, `DEL`).
+- Persistence through an append-only log replayed at startup.
+- Running clang-tidy in CI (the `.clang-tidy` and `.clang-format` files are in the
+  repository but are not enforced yet).
+
+## Layout
+
 ```
-### 5️⃣ Configurar compilador en VS Code
-
-Ir a CMake: Scan for Kits.
-
-Elegir un kit con clang++ o g++.
-
-⚠️ Asegúrate de NO usar GTest instalado por Conda.
-Si existe, elimina Miniconda del PATH mientras compilas o fuerza GTest_DIR a vcpkg.
-
-### 6️⃣ Configurar y compilar
-```bash
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build -j
+include/fastkv/fastkv.hpp   public header
+src/fastkv.cpp              implementation
+src/main.cpp                tiny demo executable (fastkv_main)
+tests/test_fastkv.cpp       GoogleTest suite (fastkv_tests)
+benchmarks/bench_fastkv.cpp Google Benchmark target (fastkv_bench)
 ```
-### 7️⃣ Ejecutar tests
-```bash
-ctest --test-dir build --output-on-failure
-```
-### 8️⃣ Ejecutar benchmark
-```bash
-./build/fastkv_bench.exe
-```
----
-
-### 🧩 CMake — Puntos clave
-
-enable_testing() + include(GoogleTest) para integración con CTest.
-
-find_package(... CONFIG REQUIRED) para dependencias vcpkg.
-
-Mantener CMAKE_EXPORT_COMPILE_COMMANDS ON.
-
-Opción recomendada:
-
-```C
-option(ENABLE_SANITIZERS "Enable sanitizers" OFF)
-```
----
-
-### 🧹 Coding style & static checks
-
-clang-format → archivo .clang-format.
-
-clang-tidy → checks:
-
-modernize-*, performance-*, bugprone-*, cppcoreguidelines-*
-
-Sanitizers: ASan + UBSan en CI.
-
-No mezclar runtimes/ABIs entre toolchains.
-
----
-
-### 📢 Cómo documentar avances (CHANGELOG)
-
-Formato oficial para reportarme avances en el chat:
-```md
-# CHANGELOG (workspace)
-## 2025-11-25 — v0.1-dev (Isok)
-### Added
-- Inicialización del repo (CMakeLists.txt, vcpkg.json).
-- Estructura de carpetas: include/, src/, tests/, benchmarks/.
-- Implementación básica de FastKV: header + cpp (put/get/erase).
-- main.cpp de prueba.
-- .clang-format y .clang-tidy agregados.
-
-### Config
-- Instalación y bootstrap de vcpkg en C:\dev\vcpkg.
-- VS Code: settings.json configurado con toolchain vcpkg.
-- Compilador usado: clang++ (MinGW/LLVM).
-
-### Issues / TODO
-- Resolver mezcla de librerías de Miniconda (se quitó del PATH temporalmente).
-- Añadir thread-pool y pruebas de concurrencia.
-```
----
