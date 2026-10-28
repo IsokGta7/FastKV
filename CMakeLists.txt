@@ -7,6 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Enable compile commands (clang-tidy)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Sanitizers (GCC/Clang only), e.g. -DFASTKV_SANITIZE=address,undefined or
+# -DFASTKV_SANITIZE=thread. Applies to every target in this project.
+set(FASTKV_SANITIZE "" CACHE STRING "Comma-separated -fsanitize= list for GCC/Clang builds")
+if(FASTKV_SANITIZE)
+    if(MSVC)
+        message(FATAL_ERROR "FASTKV_SANITIZE is only supported with GCC and Clang")
+    endif()
+    add_compile_options(-fsanitize=${FASTKV_SANITIZE} -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=${FASTKV_SANITIZE})
+endif()
+
 # ================================
 # Library
 # ================================
