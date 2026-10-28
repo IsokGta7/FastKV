@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -82,6 +83,38 @@ TEST(FastKV, PutAfterEraseStoresAgain) {
     ASSERT_TRUE(kv.erase("k"));
     kv.put("k", "new");
     EXPECT_EQ(kv.get("k"), std::optional<std::string>("new"));
+}
+
+TEST(FastKVSharding, ZeroShardsIsRejected) { EXPECT_THROW(FastKV(0), std::invalid_argument); }
+
+TEST(FastKVSharding, ReportsConfiguredShardCount) {
+    EXPECT_EQ(FastKV().shard_count(), FastKV::kDefaultShardCount);
+    EXPECT_EQ(FastKV(1).shard_count(), 1U);
+    EXPECT_EQ(FastKV(7).shard_count(), 7U);
+}
+
+// The shard count is a performance knob only: every count must behave like a
+// single map.
+TEST(FastKVSharding, SameBehaviourForEveryShardCount) {
+    constexpr int kKeys = 1000;
+    for (std::size_t shards : {std::size_t{1}, std::size_t{2}, std::size_t{7}, std::size_t{64}}) {
+        SCOPED_TRACE("shards=" + std::to_string(shards));
+        FastKV kv(shards);
+        for (int i = 0; i < kKeys; ++i) {
+            kv.put("key-" + std::to_string(i), "value-" + std::to_string(i));
+        }
+        for (int i = 0; i < kKeys; i += 2) {
+            EXPECT_TRUE(kv.erase("key-" + std::to_string(i)));
+        }
+        for (int i = 0; i < kKeys; ++i) {
+            const auto value = kv.get("key-" + std::to_string(i));
+            if (i % 2 == 0) {
+                EXPECT_EQ(value, std::nullopt) << i;
+            } else {
+                EXPECT_EQ(value, std::optional<std::string>("value-" + std::to_string(i)));
+            }
+        }
+    }
 }
 
 // Writers fill disjoint key ranges while readers hammer the same keys. Under
